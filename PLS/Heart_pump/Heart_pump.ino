@@ -1,4 +1,5 @@
 #include <ssd1306.h>
+#include <EEPROM.h>
 
 
 #define SERVO1PIN     1
@@ -10,7 +11,7 @@
 /* Servo pulse duration 1000us to 2000us */
 #define MIN_ANGLE   1200
 #define MAX_ANGLE   1800
-#define INCREMENT   10
+#define INCREMENT   5
 
 #define STATE_OFF           0
 #define STATE_UP_CONTRACT   1
@@ -21,12 +22,19 @@
 #define IMG_START           40
 #define IMG_TRAIL           70
 
+#define CMD_TIMEOUT       (100) 
+#define CMD_MAX           (5)
+#define CMD_MIN           (1)
+
 uint32_t angle1 = MIN_ANGLE;
 uint32_t angle2 = MIN_ANGLE;
+uint8_t speed = INCREMENT;    
 bool pwr_flag = false;
 uint8_t h_state = STATE_OFF;
 uint8_t cursorx = 0;
 uint8_t yoffset;
+uint8_t cmd = 0;
+uint32_t cmd_timestamp = 0;
 
 
 void servo_delay_short(uint32_t duration_us){ 
@@ -102,8 +110,6 @@ void draw_ecg(){
   cursorx++; 
 }
 
-
-
 void draw_screensaver(){
   ssd1306_fillScreen(0x00); 
   int x, y, r, dist;
@@ -123,6 +129,42 @@ void draw_screensaver(){
   ssd1306_drawHLine(64-r, SCREEN_OFFSET+1, 64);
   ssd1306_drawHLine(64-r, SCREEN_OFFSET-1, 64);
 }
+
+uint8_t cmd_rx(){  
+  if(pwr_flag){ 
+    if(cmd_timestamp && ((millis() - cmd_timestamp) > CMD_TIMEOUT) ){
+      if(cmd > CMD_MAX){
+        cmd = CMD_MAX;
+      }
+      if(cmd < CMD_MIN){
+        cmd = CMD_MIN;
+      }
+
+      speed = INCREMENT * cmd;     
+
+      EEPROM.begin();
+      EEPROM.update(0, cmd);
+      EEPROM.end();  
+
+      cmd_timestamp = 0;
+      cmd = 0;
+    }
+  }else{    
+    if(cmd_timestamp == 0){
+      cmd_timestamp = millis();
+    }
+
+    /* Changing speed or shutting down */
+    while((digitalRead(PWR_ON_PIN) == LOW) && ((millis() - cmd_timestamp) < CMD_TIMEOUT)){};     
+    
+    cmd++;
+
+    if((millis() - cmd_timestamp) >= CMD_TIMEOUT){
+      cmd_timestamp = 0;
+      cmd = 0;      
+    } 
+  }
+}
    
 void setup() {
   pinMode(PWR_ON_PIN, INPUT); 
@@ -134,51 +176,65 @@ void setup() {
   ssd1306_128x64_i2c_initEx(3,4,0);
   ssd1306_fillScreen(0x00);  
   draw_screensaver();
+
+  EEPROM.begin();
+  cmd = EEPROM.read(0);
+  EEPROM.end();
+
+  if(cmd > CMD_MAX){
+    cmd = CMD_MAX;
+  }
+  if(cmd < CMD_MIN){
+    cmd = CMD_MIN;
+  }
+
+  speed = INCREMENT * cmd;  
 }
 
 void loop()  {
   pwr_flag = (digitalRead(PWR_ON_PIN) == HIGH);
+  cmd_rx();
 
-  if(h_state == STATE_OFF){
-    if(pwr_flag){      
+  if(!pwr_flag){
+    if(h_state != STATE_OFF){
+      h_state = STATE_OFF;
+      draw_screensaver();     
+    }
+  }else{
+    if(h_state == STATE_OFF){
       h_state = STATE_UP_CONTRACT;
       ssd1306_fillScreen(0x00); 
-    }
-  }else{  
-    draw_ecg();    
+    }else{  
+      draw_ecg();    
 
-    if(h_state == STATE_UP_CONTRACT){
-      if(angle1 < MAX_ANGLE){
-        angle1 += INCREMENT;
-        servo_write(SERVO1PIN, angle1);     
-      }else{
-        h_state = STATE_UP_EXPAND;
-      }
-    }else if(h_state == STATE_UP_EXPAND){
-      if(angle1 > MIN_ANGLE){
-        angle1 -= INCREMENT;
-        servo_write(SERVO1PIN, angle1);
-      }else{
-        h_state = STATE_DOWN_CONTRACT;
-      }
-    }else if(h_state == STATE_DOWN_CONTRACT){
-      if(angle2 < MAX_ANGLE){
-        angle2 += INCREMENT;
-        servo_write(SERVO2PIN, angle2);
-      }else{
-        h_state = STATE_DOWN_EXPAND;
-      }
-    }else if(h_state == STATE_DOWN_EXPAND){
-      if(angle2 > MIN_ANGLE){
-        angle2 -= INCREMENT;
-        servo_write(SERVO2PIN, angle2);
-      }else{
-        if(pwr_flag){
-          h_state = STATE_UP_CONTRACT;
+      if(h_state == STATE_UP_CONTRACT){
+        if(angle1 < MAX_ANGLE){
+          angle1 += speed;
+          servo_write(SERVO1PIN, angle1);     
         }else{
-          h_state = STATE_OFF;   
-          draw_screensaver();       
-        }        
+          h_state = STATE_UP_EXPAND;
+        }
+      }else if(h_state == STATE_UP_EXPAND){
+        if(angle1 > MIN_ANGLE){
+          angle1 -= speed;
+          servo_write(SERVO1PIN, angle1);
+        }else{
+          h_state = STATE_DOWN_CONTRACT;
+        }
+      }else if(h_state == STATE_DOWN_CONTRACT){
+        if(angle2 < MAX_ANGLE){
+          angle2 += speed;
+          servo_write(SERVO2PIN, angle2);
+        }else{
+          h_state = STATE_DOWN_EXPAND;
+        }
+      }else if(h_state == STATE_DOWN_EXPAND){
+        if(angle2 > MIN_ANGLE){
+          angle2 -= speed;
+          servo_write(SERVO2PIN, angle2);
+        }else{
+          h_state = STATE_UP_CONTRACT;            
+        }
       }
     }
   }
